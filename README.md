@@ -1,7 +1,5 @@
 Relocation_Phosphate_Map-main
 
-Overview
-
 This repository contains a React map visualization for phosphate relocation infrastructure. The recent changes fix two issues:
 
 - src/utils/dataProcessing.ts: Corrected coordinate averaging and normalization. The helper functions now consistently return coordinates in the format [lat, lon]. This avoids accidental latitude/longitude swaps when averaging or computing map centers.
@@ -18,9 +16,7 @@ Files changed/added
   - Groups infrastructure by type (from properties.infrastructure_type or properties.type) and renders a toggleable list.
   - Uses the utilities in src/utils/dataProcessing.ts to ensure coordinates are normalized to [lat, lon] before rendering.
   - Uses color-coded CircleMarker symbols per type for clearer visualization.
-
-- README.md (added)
-
+    
 Getting started
 
 Prerequisites
@@ -51,5 +47,3 @@ Testing the fixes
 - Coordinate normalization: Ensure GeoJSON features with Point geometries whose coordinates are in [lon, lat] will render in the correct place; the helpers will convert to [lat, lon] before plotting.
 - Averaging: Multi-point geometries (LineString/Polygon/MultiPoint) are averaged using correct latitude/longitude sums and will return a centroid as [lat, lon].
 - Grouping and filtering: Load your features into the PhosphateMap component and verify the control in the top-right lists each infrastructure type and correctly toggles visibility. Symbols are color-coded by type.
-
-If you want me to push these changes to a feature branch instead of main, or to open a PR with a description, tell me the branch name and I will create it.
