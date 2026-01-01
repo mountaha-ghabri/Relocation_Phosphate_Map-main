@@ -1,301 +1,175 @@
-import { useEffect, useRef } from 'react';
-import Plotly from 'plotly.js-dist-min';
-import { processGovernorateData, getInfrastructureWithRegions } from '../utils/dataProcessing';
-import { railwayRoutes, cities, infrastructureGroups, suitabilityGroups } from '../data/phosphateData';
+import React, { useMemo, useState, useEffect } from 'react';
+import { MapContainer, TileLayer, Marker, Popup, CircleMarker, LayerGroup } from 'react-leaflet';
+import L from 'leaflet';
+import { averageCoordinates, toLatLon, toLatLonAverage, Coordinate } from '../utils/dataProcessing';
 
-export default function PhosphateMap() {
-  const mapRef = useRef<HTMLDivElement>(null);
+type Feature = {
+  type?: string;
+  geometry?: {
+    type: string;
+    // GeoJSON uses [lon, lat] by default for point coordinates, but we normalize in helpers
+    coordinates: any;
+  };
+  properties?: {
+    infrastructure_type?: string;
+    name?: string;
+    [key: string]: any;
+  };
+};
 
+type Props = {
+  features: Feature[];
+  center?: Coordinate;
+  zoom?: number;
+};
+
+// Simple mapping from infrastructure type to symbol/color
+const typeStyle = (type: string) => {
+  const key = (type || '').toLowerCase();
+  switch (key) {
+    case 'power':
+    case 'powerline':
+    case 'electrical':
+      return { color: '#c0392b', radius: 8 }; // red
+    case 'road':
+    case 'highway':
+      return { color: '#e67e22', radius: 6 }; // orange
+    case 'water':
+    case 'pipeline':
+      return { color: '#2980b9', radius: 7 }; // blue
+    case 'mine':
+    case 'factory':
+      return { color: '#8e44ad', radius: 8 }; // purple
+    default:
+      return { color: '#27ae60', radius: 6 }; // green
+  }
+};
+
+function groupByInfrastructure(features: Feature[]) {
+  const groups: Record<string, Feature[]> = {};
+  for (const f of features || []) {
+    const type = (f.properties && (f.properties.infrastructure_type || f.properties.type)) || 'unknown';
+    if (!groups[type]) groups[type] = [];
+    groups[type].push(f);
+  }
+  return groups;
+}
+
+export default function PhosphateMap({ features = [], center, zoom = 6 }: Props) {
+  const groups = useMemo(() => groupByInfrastructure(features), [features]);
+
+  // Visible toggles for each infrastructure type
+  const [visible, setVisible] = useState<Record<string, boolean>>({});
+
+  // Initialize visibility when groups change
   useEffect(() => {
-    if (!mapRef.current) return;
-
-    const governorates = processGovernorateData();
-    const infrastructureWithRegions = getInfrastructureWithRegions();
-
-    const data: Plotly.Data[] = [];
-
-    for (const [groupName, style] of Object.entries(suitabilityGroups)) {
-      const groupData = governorates.filter(gov => gov.suitability_group === groupName);
-
-      if (groupData.length > 0) {
-        const regionNamesWithEmoji = groupData.map(row =>
-          row.infra_emoji ? `${row.infra_emoji} ${row.name}` : row.name
-        );
-
-        const hoverDataList = groupData.map(row => {
-          const infraText = row.infra_count > 0
-            ? row.infra_list.map(item => `${item.emoji} ${item.name}`).join('<br>')
-            : 'None';
-          return [row.name, row.suitability, row.population_density, row.infra_count, infraText];
-        });
-
-        data.push({
-          type: 'scattermapbox',
-          lat: groupData.map(g => g.center_lat),
-          lon: groupData.map(g => g.center_lon),
-          mode: 'markers+text',
-          marker: {
-            size: groupData.map(g => 15 + (g.suitability / 100) * 25),
-            color: style.color,
-            opacity: 0.8,
-          },
-          text: regionNamesWithEmoji,
-          textposition: 'middle center',
-          textfont: {
-            size: 10,
-            color: 'white',
-            family: 'Times New Roman, serif'
-          },
-          customdata: hoverDataList,
-          hovertemplate:
-            '<b>%{customdata[0]}</b><br>' +
-            'Suitability: %{customdata[1]:.0f}%<br>' +
-            'Pop Density: %{customdata[2]:.0f} p/km²<br>' +
-            '<b>Infrastructure Sites: %{customdata[3]}</b><br>' +
-            '%{customdata[4]}<br>' +
-            '<extra></extra>',
-          name: `<b>${groupName}</b><br><span style="font-size:9px">${style.description}</span>`,
-          showlegend: true,
-          legendgroup: 'Suitability',
-          legendgrouptitle: { text: '<b>📊 Regional Suitability (Relocation Score)</b>' }
-        } as Plotly.Data);
-      }
+    const keys = Object.keys(groups);
+    const init: Record<string, boolean> = {};
+    for (const k of keys) {
+      init[k] = visible[k] !== undefined ? visible[k] : true;
     }
+    setVisible(init);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [JSON.stringify(Object.keys(groups))]);
 
-    const infraGroupNames = ['Mines', 'Processing Plants', 'Export Ports', 'Exploration Sites'];
-
-    for (const groupName of infraGroupNames) {
-      const style = infrastructureGroups[groupName];
-      const groupData = infrastructureWithRegions.filter(infra => infra.emoji === style.emoji);
-
-      if (groupData.length > 0) {
-        const hoverData = groupData.map(row => [
-          row.name,
-          row.type,
-          row.capacity,
-          row.status,
-          row.region || 'Unknown'
-        ]);
-
-        // Use different shapes for infrastructure to differentiate from suitability circles
-        const shapeMap: Record<string, string> = {
-          'Mines': 'diamond',
-          'Processing Plants': 'square',
-          'Export Ports': 'star',
-          'Exploration Sites': 'triangle-up'
-        };
-        
-        data.push({
-          type: 'scattermapbox',
-          lat: groupData.map(i => i.lat),
-          lon: groupData.map(i => i.lon),
-          mode: 'markers+text',
-          marker: {
-            size: 30,
-            color: style.color,
-            opacity: 0.9,
-            symbol: shapeMap[groupName] || 'circle',
-            line: {
-              width: 2,
-              color: 'white'
-            }
-          },
-          text: groupData.map(() => style.emoji),
-          textposition: 'middle center',
-          textfont: {
-            size: 22,
-            family: 'Segoe UI Emoji, Apple Color Emoji, Noto Color Emoji, Arial Unicode MS, sans-serif'
-          },
-          customdata: hoverData,
-          hovertemplate:
-            '<b>%{customdata[0]}</b><br>' +
-            'Type: %{customdata[1]}<br>' +
-            'Capacity: %{customdata[2]:.1f} M tons/year<br>' +
-            'Status: %{customdata[3]}<br>' +
-            'Region: %{customdata[4]}<br>' +
-            '<extra></extra>',
-          name: `<b>${style.emoji} ${groupName}</b>`,
-          showlegend: true,
-          legendgroup: 'Infrastructure',
-          legendgrouptitle: { text: '<b>🔧 Phosphate Infrastructure</b>' }
-        } as Plotly.Data);
-      }
-    }
-
-    for (const route of railwayRoutes) {
-      const lats = route.points.map(point => point[0]);
-      const lons = route.points.map(point => point[1]);
-
-      data.push({
-        type: 'scattermapbox',
-        lat: lats,
-        lon: lons,
-        mode: 'lines+markers',
-        line: {
-          width: 3,
-          color: '#8B4513'
-        },
-        marker: {
-          size: 8,
-          color: '#8B4513',
-          symbol: 'circle'
-        },
-        name: `<b>🚂 ${route.name}</b>`,
-        hovertemplate:
-          `<b>${route.name}</b><br>` +
-          `${route.description}<br>` +
-          '<extra></extra>',
-        showlegend: true,
-        legendgroup: 'Transportation',
-        legendgrouptitle: { text: '<b>🚂 Transportation</b>' }
-      } as Plotly.Data);
-    }
-
-    for (const city of cities) {
-      data.push({
-        type: 'scattermapbox',
-        lat: [city.lat],
-        lon: [city.lon],
-        mode: 'markers+text',
-        marker: {
-          size: 10,
-          color: 'purple',
-          symbol: 'circle',
-          opacity: 0.7
-        },
-        text: [`🏛️ ${city.name}`],
-        textposition: 'bottom center',
-        textfont: {
-          size: 10,
-          color: 'purple',
-          family: 'Times New Roman, serif'
-        },
-        hovertemplate: `<b>${city.name}</b><br>Major City<br><extra></extra>`,
-        showlegend: false,
-        name: `City: ${city.name}`
-      } as Plotly.Data);
-    }
-
-    const layout: Partial<Plotly.Layout> = {
-      title: {
-        text:
-          '🇹🇳 TUNISIAN PHOSPHATE INDUSTRY - RELOCATION SUITABILITY ANALYSIS<br>' +
-          '<span style="font-size:15px; color:#555">Interactive Map with Regional Scores & Infrastructure Locations</span>',
-        y: 0.98,
-        x: 0.5,
-        xanchor: 'center',
-        yanchor: 'top',
-        font: {
-          size: 26,
-          family: 'Times New Roman, serif',
-          color: '#2E8B57'
+  // Determine a sensible center if none provided: average all feature coords
+  const computedCenter = useMemo(() => {
+    try {
+      const points: Coordinate[] = [];
+      for (const f of features || []) {
+        if (!f.geometry || !f.geometry.coordinates) continue;
+        const geom = f.geometry;
+        if (geom.type === 'Point') {
+          points.push(toLatLon(geom.coordinates as number[]));
+        } else if (Array.isArray(geom.coordinates)) {
+          // For LineString/Polygon/MultiPoint etc, compute average
+          const coord = toLatLonAverage(geom.coordinates as number[][]);
+          points.push(coord);
         }
-      },
-      mapbox: {
-        style: 'carto-positron',
-        center: { lat: 34.2, lon: 9.5 },
-        zoom: 5.5,
-        bearing: 0,
-        pitch: 0
-      },
-      height: 900,
-      width: undefined,
-      margin: { l: 20, r: 120, t: 100, b: 20 },
-      paper_bgcolor: '#f8f9fa',
-      hovermode: 'closest',
-      legend: {
-        yanchor: 'bottom',
-        y: 0.01,
-        xanchor: 'left',
-        x: 0.01,
-        bgcolor: 'rgba(255, 255, 255, 0.95)',
-        bordercolor: '#2E8B57',
-        borderwidth: 2,
-        font: { size: 11, family: 'Times New Roman, serif', color: '#000000' },
-        itemsizing: 'constant',
-        tracegroupgap: 10,
-        itemwidth: 30,
-        groupclick: 'toggleitem',
-        itemclick: 'toggle'
-      },
-      font: { family: 'Times New Roman, serif' },
-      annotations: [
-        {
-          x: 0.98,
-          y: 0.02,
-          xref: 'paper',
-          yref: 'paper',
-          text:
-            '<b>📈 SUMMARY STATISTICS</b><br><br>' +
-            `<b>Total Infrastructure Sites:</b> ${infrastructureWithRegions.length}<br>` +
-            `<b>Active Mines:</b> ${infrastructureWithRegions.filter(i => i.emoji === '⛏️').length}<br>` +
-            `<b>Processing Plants:</b> ${infrastructureWithRegions.filter(i => i.emoji === '🏭').length}<br>` +
-            `<b>Export Ports:</b> ${infrastructureWithRegions.filter(i => i.emoji === '🛳️').length}<br>` +
-            `<b>Exploration Sites:</b> ${infrastructureWithRegions.filter(i => i.emoji === '🔍').length}<br>` +
-            `<b>Railway Routes:</b> ${railwayRoutes.length}<br><br>` +
-            '<b>Highest Suitability:</b><br>' +
-            '   • Medenine (95%)<br>' +
-            '   • Kebili (94%)<br>' +
-            '   • Tozeur (92%)<br>' +
-            '<b>Lowest Suitability:</b><br>' +
-            '   • Gabès (20%) ⚠️<br><br>' +
-            '<span style="font-size:10px; color:#777">' +
-            'Data sources: INS Tunisia,<br>' +
-            'GCT, World Bank, IFA<br>' +
-            'For GP optimization model</span>',
-          showarrow: false,
-          bgcolor: 'rgba(255, 255, 255, 0.98)',
-          bordercolor: '#2E8B57',
-          borderwidth: 2,
-          borderpad: 10,
-          align: 'left',
-          font: { size: 11, family: 'Times New Roman, serif' }
-        },
-        {
-          x: 0.5,
-          y: 0.01,
-          xref: 'paper',
-          yref: 'paper',
-          text:
-            '<span style="font-size:10px; color:#666">' +
-            'Interactive map for Goal Programming optimization model • ' +
-            'Suitability scores based on population density, water availability, environmental impact, and infrastructure access • ' +
-            'Click legend items to toggle visibility</span>',
-          showarrow: false,
-          bgcolor: 'rgba(255, 255, 255, 0.8)',
-          bordercolor: 'gray',
-          borderwidth: 1,
-          borderpad: 5,
-          align: 'center',
-          font: { size: 9, family: 'Times New Roman, serif' }
-        }
-      ]
-    };
-
-    const config: Partial<Plotly.Config> = {
-      displayModeBar: true,
-      displaylogo: false,
-      modeBarButtonsToRemove: [],
-      scrollZoom: true,
-      doubleClick: 'reset+autosize' as any,
-      toImageButtonOptions: {
-        format: 'png',
-        filename: 'tunisia_phosphate_map',
-        height: 900,
-        width: 1400,
-        scale: 1
       }
-    };
+      if (points.length === 0) return center || ([0, 0] as Coordinate);
+      return averageCoordinates(points);
+    } catch (err) {
+      return center || ([0, 0] as Coordinate);
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [features]);
 
-    const currentRef = mapRef.current;
-    Plotly.newPlot(currentRef, data, layout, config);
+  const mapCenter = center || computedCenter;
 
-    return () => {
-      if (currentRef) {
-        Plotly.purge(currentRef);
+  const toggleType = (type: string) => {
+    setVisible((v) => ({ ...v, [type]: !v[type] }));
+  };
+
+  // Helper to compute a display coordinate for a feature
+  const featureCoordinate = (f: Feature): Coordinate | null => {
+    if (!f.geometry || !f.geometry.coordinates) return null;
+    const geom = f.geometry;
+    try {
+      if (geom.type === 'Point') {
+        return toLatLon(geom.coordinates as number[]);
       }
-    };
-  }, []);
+      if (Array.isArray(geom.coordinates)) {
+        return toLatLonAverage(geom.coordinates as number[][]);
+      }
+    } catch (e) {
+      // fallback: attempt best-effort normalization
+      const c = Array.isArray(geom.coordinates[0]) ? geom.coordinates[0] : geom.coordinates;
+      try {
+        return toLatLon(c as number[]);
+      } catch (_) {
+        return null;
+      }
+    }
+    return null;
+  };
 
-  return <div ref={mapRef} className="w-full h-full" />;
+  return (
+    <div style={{ position: 'relative' }}>
+      {/* Simple overlay controls for filter toggles */}
+      <div style={{ position: 'absolute', right: 10, top: 10, zIndex: 1000, background: 'white', padding: 8, borderRadius: 4, boxShadow: '0 1px 4px rgba(0,0,0,0.2)' }}>
+        <strong>Infrastructure</strong>
+        <div style={{ maxHeight: 240, overflowY: 'auto', marginTop: 6 }}>
+          {Object.keys(groups).map((type) => (
+            <label key={type} style={{ display: 'flex', alignItems: 'center', marginBottom: 6 }}>
+              <input type="checkbox" checked={visible[type] ?? true} onChange={() => toggleType(type)} />
+              <span style={{ marginLeft: 8 }}>{type} ({groups[type].length})</span>
+            </label>
+          ))}
+        </div>
+      </div>
+
+      <MapContainer center={mapCenter} zoom={zoom} style={{ height: '100vh', width: '100%' }}>
+        <TileLayer url="https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png" attribution="&copy; OpenStreetMap contributors" />
+
+        {Object.entries(groups).map(([type, feats]) => {
+          if (!visible[type]) return null;
+          const style = typeStyle(type);
+          return (
+            <LayerGroup key={type}>
+              {feats.map((f, idx) => {
+                const coord = featureCoordinate(f);
+                if (!coord) return null;
+                const [lat, lon] = coord;
+                // Use CircleMarker for clear, color-coded symbols
+                return (
+                  <CircleMarker key={`${type}-${idx}`} center={[lat, lon]} pathOptions={{ color: style.color }} radius={style.radius}>
+                    <Popup>
+                      <div>
+                        <strong>{(f.properties && (f.properties.name || f.properties.title)) || 'Unnamed'}</strong>
+                        <div>Type: {type}</div>
+                        {f.properties && Object.keys(f.properties).length > 0 && (
+                          <pre style={{ whiteSpace: 'pre-wrap', marginTop: 6 }}>{JSON.stringify(f.properties, null, 2)}</pre>
+                        )}
+                      </div>
+                    </Popup>
+                  </CircleMarker>
+                );
+              })}
+            </LayerGroup>
+          );
+        })}
+      </MapContainer>
+    </div>
+  );
 }

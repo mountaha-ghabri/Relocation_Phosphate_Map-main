@@ -1,92 +1,65 @@
-import { tunisiaGeoJSON } from '../data/tunisiaGeoJSON';
-import { governorateRawData, infrastructureData, getColor, getSuitabilityGroup } from '../data/phosphateData';
-import { Governorate, InfrastructureItem } from '../types';
+export type Coordinate = [number, number]; // [lat, lon]
 
-function calculateCenter(coords: number[][][]): [number, number] {
-  const lons = coords[0].map(coord => coord[0]);
-  const lats = coords[0].map(coord => coord[1]);
-  const centerLon = lons.reduce((a, b) => a + b, 0) / lons.length;
-  const centerLat = lats.reduce((a, b) => a + b, 0) / lats.length;
-  return [centerLat, centerLon];
+/**
+ * Normalize a coordinate array to [lat, lon].
+ * Many GIS sources (GeoJSON) use [lon, lat]. This helper will detect and swap
+ * when the first number looks like a longitude (> 90 or < -90) and return [lat, lon].
+ */
+export function toLatLon(coord: number[]): Coordinate {
+  if (!coord || coord.length < 2) {
+    throw new Error('Invalid coordinate: expected an array with at least 2 numbers');
+  }
+  const [a, b] = coord;
+  // If the first value is outside possible latitude range, assume it's longitude and swap
+  if (Math.abs(a) > 90) {
+    return [b, a];
+  }
+  return [a, b];
 }
 
-function findRegionForInfrastructure(infra_lat: number, infra_lon: number, regionCenters: Record<string, [number, number]>): string {
-  let minDist = Infinity;
-  let closestRegion = '';
+/**
+ * Average an array of coordinates. Each coordinate must be [lat, lon].
+ * Returns [lat, lon].
+ */
+export function averageCoordinates(coords: Coordinate[]): Coordinate {
+  if (!coords || coords.length === 0) {
+    throw new Error('averageCoordinates requires a non-empty array of coordinates');
+  }
 
-  for (const [name, [centerLat, centerLon]] of Object.entries(regionCenters)) {
-    const dist = Math.sqrt(
-      Math.pow(infra_lat - centerLat, 2) +
-      Math.pow(infra_lon - centerLon, 2)
-    );
-    if (dist < minDist) {
-      minDist = dist;
-      closestRegion = name;
+  let sumLat = 0;
+  let sumLon = 0;
+  for (const c of coords) {
+    if (!Array.isArray(c) || c.length < 2) {
+      throw new Error('Each coordinate must be an array [lat, lon]');
     }
+    const [lat, lon] = c;
+    if (typeof lat !== 'number' || typeof lon !== 'number' || Number.isNaN(lat) || Number.isNaN(lon)) {
+      throw new Error('Coordinates must be numeric [lat, lon] pairs');
+    }
+    sumLat += lat;
+    sumLon += lon;
   }
 
-  return closestRegion;
+  return [sumLat / coords.length, sumLon / coords.length];
 }
 
-export function processGovernorateData(): Governorate[] {
-  const regionCenters: Record<string, [number, number]> = {};
-
-  for (const feature of tunisiaGeoJSON.features) {
-    const name = feature.properties.name;
-    const coords = feature.geometry.coordinates;
-    regionCenters[name] = calculateCenter(coords);
+/**
+ * Convenience: take a GeoJSON coordinate or an array of GeoJSON coordinates and
+ * return a single [lat, lon]. If it's a single point (number[]), it will normalize.
+ * If it's an array of points (number[][]), it will normalize each and return the average.
+ */
+export function toLatLonAverage(geoCoords: number[] | number[][]): Coordinate {
+  if (!geoCoords) {
+    throw new Error('toLatLonAverage received null/undefined coordinates');
   }
 
-  const infraWithRegion: InfrastructureItem[] = infrastructureData.map(infra => ({
-    ...infra,
-    region: findRegionForInfrastructure(infra.lat, infra.lon, regionCenters)
-  }));
-
-  const governorates: Governorate[] = governorateRawData.names.map((name, index) => {
-    const suitability = governorateRawData.suitability[index];
-    const population_density = governorateRawData.population_density[index];
-    const [center_lat, center_lon] = regionCenters[name] || [0, 0];
-
-    const regionInfra = infraWithRegion.filter(infra => infra.region === name);
-    const uniqueEmojis = [...new Set(regionInfra.map(infra => infra.emoji))];
-    const infra_emoji = uniqueEmojis.join(' ');
-
-    return {
-      name,
-      suitability,
-      population_density,
-      center_lat,
-      center_lon,
-      color: getColor(suitability),
-      suitability_group: getSuitabilityGroup(suitability),
-      infra_count: regionInfra.length,
-      infra_emoji,
-      infra_list: regionInfra.map(infra => ({
-        name: infra.name,
-        type: infra.type,
-        emoji: infra.emoji,
-        lat: infra.lat,
-        lon: infra.lon,
-        capacity: infra.capacity,
-        status: infra.status
-      }))
-    };
-  });
-
-  return governorates;
-}
-
-export function getInfrastructureWithRegions(): InfrastructureItem[] {
-  const regionCenters: Record<string, [number, number]> = {};
-
-  for (const feature of tunisiaGeoJSON.features) {
-    const name = feature.properties.name;
-    const coords = feature.geometry.coordinates;
-    regionCenters[name] = calculateCenter(coords);
+  if (Array.isArray(geoCoords) && geoCoords.length > 0 && typeof geoCoords[0] === 'number') {
+    // Single coordinate: [lon, lat] or [lat, lon]
+    return toLatLon(geoCoords as number[]);
   }
 
-  return infrastructureData.map(infra => ({
-    ...infra,
-    region: findRegionForInfrastructure(infra.lat, infra.lon, regionCenters)
-  }));
+  // Otherwise assume array of coordinates: number[][]
+  const arr = geoCoords as number[][];
+  const normalized: Coordinate[] = arr.map((c) => toLatLon(c));
+  return averageCoordinates(normalized);
 }
